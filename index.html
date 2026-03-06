@@ -1,0 +1,3438 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Inferbox — Browser AI Inference</title>
+  <meta name="description" content="Run AI models directly in your browser. No server required." />
+
+  <!--
+    ╔══════════════════════════════════════════════════════════════╗
+    ║  INFERBOX — Browser-native AI Inference Engine              ║
+    ║                                                              ║
+    ║  Security / Privacy note:                                    ║
+    ║  • All inference runs locally in the browser.                ║
+    ║  • Model weights are fetched from Hugging Face (CORS OK)     ║
+    ║    and cached in browser cache / IndexedDB.                  ║
+    ║  • No user data is ever sent to any server other than        ║
+    ║    Hugging Face for model downloads.                         ║
+    ║                                                              ║
+    ║  Content Security Policy (CSP) note:                         ║
+    ║  • For production, add CSP headers restricting script-src,   ║
+    ║    connect-src to specific trusted domains only.             ║
+    ║  • Inline <script> requires 'unsafe-inline' or a nonce.      ║
+    ║                                                              ║
+    ║  SharedArrayBuffer note:                                      ║
+    ║  • wllama multi-threading requires SharedArrayBuffer which   ║
+    ║    needs the server to send these headers:                   ║
+    ║    Cross-Origin-Opener-Policy: same-origin                   ║
+    ║    Cross-Origin-Embedder-Policy: require-corp                ║
+    ║  • If those headers are absent (e.g. file:// or CDN),        ║
+    ║    wllama falls back to single-thread mode automatically.    ║
+    ╚══════════════════════════════════════════════════════════════╝
+  -->
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,400&display=swap" rel="stylesheet" />
+
+  <!-- Lucide Icons (UMD) -->
+  <script src="https://cdn.jsdelivr.net/npm/lucide@0.441.0/dist/umd/lucide.min.js"></script>
+
+  <!-- Highlight.js -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/atom-one-dark.min.css" />
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/highlight.min.js"></script>
+
+  <!-- Marked (Markdown) -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+
+  <!-- DOMPurify (sanitize HTML from markdown) -->
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+
+  <!-- Dexie.js (IndexedDB ORM) -->
+  <script src="https://cdn.jsdelivr.net/npm/dexie@3.2.7/dist/dexie.min.js"></script>
+
+  <!-- PDF.js -->
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.mjs" type="module" id="pdfjs-module"></script>
+
+  <style>
+    /* ═══════════════════════════════════════
+       DESIGN TOKENS — Deep Space Control Room
+       ═══════════════════════════════════════ */
+    :root {
+      --bg-base:       #070b14;
+      --bg-surface:    #0d1424;
+      --bg-elevated:   #121e35;
+      --bg-hover:      #162540;
+      --border:        #1a2d4a;
+      --border-bright: #1e3a5f;
+
+      --accent:        #06c5d0;
+      --accent-dim:    #048a92;
+      --accent-glow:   rgba(6,197,208,0.12);
+      --accent-border: rgba(6,197,208,0.3);
+
+      --gold:          #f5a623;
+      --gold-dim:      rgba(245,166,35,0.15);
+
+      --success:       #22d3a1;
+      --warning:       #f5a623;
+      --error:         #f06060;
+      --info:          #06c5d0;
+
+      --text-primary:  #d4e8ff;
+      --text-secondary:#7090b8;
+      --text-muted:    #3a5070;
+      --text-code:     #a8d8f0;
+
+      --sidebar-w:     270px;
+      --header-h:      56px;
+      --input-h:       auto;
+
+      --radius-sm:     6px;
+      --radius:        10px;
+      --radius-lg:     16px;
+
+      --shadow:        0 4px 24px rgba(0,0,0,0.5);
+      --shadow-glow:   0 0 20px rgba(6,197,208,0.2);
+
+      --font-ui:       'DM Sans', system-ui, sans-serif;
+      --font-head:     'Outfit', 'DM Sans', sans-serif;
+      --font-mono:     'JetBrains Mono', 'Fira Code', monospace;
+
+      --transition:    0.18s cubic-bezier(0.4,0,0.2,1);
+    }
+
+    /* ═══ RESET & BASE ═══ */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html { height: 100%; }
+
+    body {
+      height: 100%;
+      font-family: var(--font-ui);
+      background: var(--bg-base);
+      color: var(--text-primary);
+      overflow: hidden;
+      font-size: 14px;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Scrollbars */
+    ::-webkit-scrollbar { width: 4px; height: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 2px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--accent-dim); }
+
+    /* Focus ring */
+    :focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+      border-radius: var(--radius-sm);
+    }
+
+    /* ═══ APP LAYOUT ═══ */
+    #app {
+      display: flex;
+      height: 100vh;
+      width: 100vw;
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* ═══ SIDEBAR ═══ */
+    #sidebar {
+      width: var(--sidebar-w);
+      min-width: var(--sidebar-w);
+      height: 100%;
+      background: var(--bg-surface);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      transition: width var(--transition), min-width var(--transition), transform var(--transition);
+      overflow: hidden;
+      z-index: 100;
+      flex-shrink: 0;
+    }
+
+    #sidebar.collapsed {
+      width: 0;
+      min-width: 0;
+      border-right-color: transparent;
+    }
+
+    .sidebar-header {
+      padding: 16px 14px 12px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    .logo-mark {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex: 1;
+      min-width: 0;
+    }
+
+    .logo-icon {
+      width: 30px;
+      height: 30px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-dim));
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .logo-icon svg { color: #fff; }
+
+    .logo-text {
+      font-family: var(--font-head);
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      color: var(--text-primary);
+      white-space: nowrap;
+    }
+
+    #new-chat-btn {
+      width: 32px;
+      height: 32px;
+      border-radius: var(--radius-sm);
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-bright);
+      color: var(--text-secondary);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all var(--transition);
+      flex-shrink: 0;
+    }
+
+    #new-chat-btn:hover {
+      background: var(--accent-glow);
+      border-color: var(--accent-border);
+      color: var(--accent);
+    }
+
+    /* History list */
+    #history-section {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px 8px;
+    }
+
+    .history-group-label {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      padding: 10px 8px 4px;
+    }
+
+    .history-item {
+      padding: 9px 10px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text-secondary);
+      font-size: 13px;
+      line-height: 1.4;
+      transition: all var(--transition);
+      border: 1px solid transparent;
+      margin-bottom: 2px;
+    }
+
+    .history-item:hover {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+      border-color: var(--border);
+    }
+
+    .history-item.active {
+      background: var(--accent-glow);
+      color: var(--accent);
+      border-color: var(--accent-border);
+    }
+
+    .history-item svg { flex-shrink: 0; }
+
+    .history-item-title {
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .history-item-del {
+      opacity: 0;
+      cursor: pointer;
+      padding: 2px;
+      border-radius: 4px;
+      transition: all var(--transition);
+      flex-shrink: 0;
+    }
+
+    .history-item:hover .history-item-del { opacity: 1; }
+    .history-item-del:hover { background: rgba(240,96,96,0.2); color: var(--error); }
+
+    /* Sidebar footer */
+    .sidebar-footer {
+      padding: 10px 8px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
+    .sidebar-footer-btn {
+      flex: 1;
+      padding: 8px 10px;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-family: var(--font-ui);
+      transition: all var(--transition);
+    }
+
+    .sidebar-footer-btn:hover {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+      border-color: var(--border-bright);
+    }
+
+    /* ═══ MAIN AREA ═══ */
+    #main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      position: relative;
+      min-width: 0;
+    }
+
+    /* Header */
+    #chat-header {
+      height: var(--header-h);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 16px;
+      background: var(--bg-surface);
+      flex-shrink: 0;
+    }
+
+    #sidebar-toggle {
+      width: 34px;
+      height: 34px;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all var(--transition);
+      flex-shrink: 0;
+    }
+
+    #sidebar-toggle:hover {
+      background: var(--bg-hover);
+      border-color: var(--border);
+      color: var(--text-primary);
+    }
+
+    .header-model-info {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .header-model-name {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-secondary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .status-dot.idle     { background: var(--text-muted); }
+    .status-dot.loading  { background: var(--warning); animation: pulse 1s infinite; }
+    .status-dot.ready    { background: var(--success); }
+    .status-dot.error    { background: var(--error); }
+    .status-dot.thinking { background: var(--accent); animation: pulse 0.6s infinite; }
+
+    @keyframes pulse {
+      0%,100% { opacity:1; }
+      50% { opacity:0.3; }
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
+    .icon-btn {
+      width: 34px;
+      height: 34px;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all var(--transition);
+    }
+
+    .icon-btn:hover {
+      background: var(--bg-hover);
+      border-color: var(--border);
+      color: var(--text-primary);
+    }
+
+    .btn-accent {
+      padding: 6px 14px;
+      border-radius: var(--radius-sm);
+      background: var(--accent);
+      border: none;
+      color: #fff;
+      font-family: var(--font-ui);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all var(--transition);
+      white-space: nowrap;
+    }
+
+    .btn-accent:hover { background: var(--accent-dim); }
+
+    /* Lang selector */
+    #lang-selector {
+      position: relative;
+    }
+
+    #lang-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      cursor: pointer;
+      font-family: var(--font-ui);
+      font-size: 12px;
+      transition: all var(--transition);
+    }
+
+    #lang-btn:hover {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+    }
+
+    .lang-dropdown {
+      position: absolute;
+      bottom: calc(100% + 6px);
+      right: 0;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-bright);
+      border-radius: var(--radius);
+      overflow: hidden;
+      z-index: 200;
+      box-shadow: var(--shadow);
+      min-width: 140px;
+    }
+
+    .lang-option {
+      padding: 9px 14px;
+      cursor: pointer;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text-secondary);
+      transition: all var(--transition);
+    }
+
+    .lang-option:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .lang-option.active { color: var(--accent); background: var(--accent-glow); }
+
+    /* ═══ MESSAGES AREA ═══ */
+    #messages-container {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      scroll-behavior: smooth;
+    }
+
+    #messages-list {
+      flex: 1;
+      padding: 24px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      max-width: 860px;
+      width: 100%;
+      margin: 0 auto;
+    }
+
+    /* Welcome screen */
+    #welcome {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      padding: 40px;
+      text-align: center;
+    }
+
+    .welcome-icon {
+      width: 60px;
+      height: 60px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-dim));
+      border-radius: var(--radius-lg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 0 40px var(--accent-glow);
+    }
+
+    .welcome-icon svg { color: #fff; }
+
+    .welcome-title {
+      font-family: var(--font-head);
+      font-size: 26px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      color: var(--text-primary);
+    }
+
+    .welcome-subtitle {
+      font-size: 14px;
+      color: var(--text-secondary);
+      max-width: 360px;
+      line-height: 1.7;
+    }
+
+    .welcome-hint {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 16px;
+      border: 1px solid var(--accent-border);
+      border-radius: var(--radius);
+      background: var(--accent-glow);
+      font-size: 13px;
+      color: var(--accent);
+      cursor: pointer;
+      transition: all var(--transition);
+    }
+
+    .welcome-hint:hover {
+      background: rgba(6,197,208,0.2);
+    }
+
+    /* Message bubbles */
+    .message-row {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      animation: msgIn 0.2s ease;
+    }
+
+    @keyframes msgIn {
+      from { opacity:0; transform:translateY(6px); }
+      to   { opacity:1; transform:translateY(0); }
+    }
+
+    .message-row.user { flex-direction: row-reverse; }
+
+    .message-avatar {
+      width: 32px;
+      height: 32px;
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      margin-top: 2px;
+    }
+
+    .message-row.user .message-avatar {
+      background: linear-gradient(135deg, #1a3a6a, #0f2548);
+      border: 1px solid var(--border-bright);
+      color: var(--text-secondary);
+    }
+
+    .message-row.assistant .message-avatar {
+      background: linear-gradient(135deg, var(--accent-dim), #023540);
+      border: 1px solid var(--accent-border);
+      color: var(--accent);
+    }
+
+    .message-body {
+      flex: 1;
+      min-width: 0;
+      max-width: calc(100% - 44px);
+    }
+
+    .message-row.user .message-body { align-items: flex-end; display: flex; flex-direction: column; }
+
+    .message-meta {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 5px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .message-row.user .message-meta { flex-direction: row-reverse; }
+
+    .message-role { font-weight: 500; }
+
+    .message-content {
+      padding: 12px 16px;
+      border-radius: var(--radius);
+      font-size: 14px;
+      line-height: 1.75;
+      max-width: 100%;
+      word-break: break-word;
+    }
+
+    .message-row.user .message-content {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-bright);
+      border-radius: var(--radius) var(--radius-sm) var(--radius) var(--radius);
+      color: var(--text-primary);
+    }
+
+    .message-row.assistant .message-content {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm) var(--radius) var(--radius) var(--radius);
+      color: var(--text-primary);
+      width: 100%;
+    }
+
+    /* Markdown styles inside messages */
+    .message-content h1,
+    .message-content h2,
+    .message-content h3 {
+      font-family: var(--font-head);
+      font-weight: 600;
+      margin: 14px 0 6px;
+      color: var(--text-primary);
+      line-height: 1.35;
+    }
+    .message-content h1 { font-size: 18px; }
+    .message-content h2 { font-size: 16px; }
+    .message-content h3 { font-size: 14px; }
+
+    .message-content p { margin: 6px 0; }
+
+    .message-content a {
+      color: var(--accent);
+      text-decoration: underline;
+      text-decoration-color: var(--accent-dim);
+    }
+
+    .message-content ul, .message-content ol {
+      padding-left: 20px;
+      margin: 6px 0;
+    }
+
+    .message-content li { margin: 3px 0; }
+
+    .message-content blockquote {
+      border-left: 3px solid var(--accent);
+      padding: 4px 0 4px 14px;
+      margin: 8px 0;
+      color: var(--text-secondary);
+      background: var(--accent-glow);
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    }
+
+    .message-content code:not(pre code) {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      background: rgba(6,197,208,0.1);
+      border: 1px solid rgba(6,197,208,0.2);
+      color: var(--text-code);
+      padding: 1px 5px;
+      border-radius: 4px;
+    }
+
+    .message-content pre {
+      margin: 10px 0;
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+      border: 1px solid var(--border-bright);
+    }
+
+    .code-block-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 12px;
+      background: #1a1e2e;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .code-lang {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+
+    .copy-code-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      padding: 2px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 11px;
+      font-family: var(--font-ui);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      transition: all var(--transition);
+    }
+
+    .copy-code-btn:hover {
+      border-color: var(--accent-border);
+      color: var(--accent);
+    }
+
+    .message-content pre code {
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      display: block;
+      overflow-x: auto;
+      padding: 14px;
+      background: #141720 !important;
+    }
+
+    .message-content table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 8px 0;
+      font-size: 13px;
+    }
+
+    .message-content th, .message-content td {
+      border: 1px solid var(--border);
+      padding: 6px 10px;
+      text-align: left;
+    }
+
+    .message-content th {
+      background: var(--bg-elevated);
+      font-weight: 600;
+      color: var(--text-secondary);
+    }
+
+    .message-content tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+
+    /* Message actions */
+    .message-actions {
+      display: flex;
+      gap: 4px;
+      margin-top: 6px;
+      opacity: 0;
+      transition: opacity var(--transition);
+    }
+
+    .message-row:hover .message-actions { opacity: 1; }
+
+    .msg-action-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      width: 26px;
+      height: 26px;
+      border-radius: 5px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all var(--transition);
+    }
+
+    .msg-action-btn:hover {
+      border-color: var(--accent-border);
+      color: var(--accent);
+      background: var(--accent-glow);
+    }
+
+    /* Attachments in message */
+    .message-attachments {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 8px;
+    }
+
+    .msg-attachment-chip {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 8px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      font-size: 11px;
+      color: var(--text-secondary);
+      font-family: var(--font-mono);
+    }
+
+    /* Streaming cursor */
+    .streaming-cursor {
+      display: inline-block;
+      width: 8px;
+      height: 14px;
+      background: var(--accent);
+      margin-left: 2px;
+      vertical-align: middle;
+      border-radius: 1px;
+      animation: blink 0.8s step-end infinite;
+    }
+
+    @keyframes blink {
+      0%,100% { opacity:1; }
+      50% { opacity:0; }
+    }
+
+    /* ═══ INPUT AREA ═══ */
+    #input-area {
+      border-top: 1px solid var(--border);
+      background: var(--bg-surface);
+      padding: 12px 16px 14px;
+      flex-shrink: 0;
+    }
+
+    #input-area-inner {
+      max-width: 860px;
+      margin: 0 auto;
+    }
+
+    /* Attachments preview row */
+    #attachments-preview {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 8px;
+    }
+
+    .attachment-chip {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 8px 4px 10px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-bright);
+      border-radius: var(--radius-sm);
+      font-size: 12px;
+      color: var(--text-secondary);
+      max-width: 200px;
+    }
+
+    .attachment-name {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .attachment-remove {
+      cursor: pointer;
+      color: var(--text-muted);
+      background: none;
+      border: none;
+      display: flex;
+      align-items: center;
+      flex-shrink: 0;
+      padding: 0;
+      transition: color var(--transition);
+    }
+
+    .attachment-remove:hover { color: var(--error); }
+
+    /* Input row */
+    #input-row {
+      display: flex;
+      align-items: flex-end;
+      gap: 8px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-bright);
+      border-radius: var(--radius);
+      padding: 8px 10px;
+      transition: border-color var(--transition), box-shadow var(--transition);
+    }
+
+    #input-row:focus-within {
+      border-color: var(--accent-border);
+      box-shadow: 0 0 0 1px rgba(6,197,208,0.12);
+    }
+
+    #message-input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: var(--text-primary);
+      font-family: var(--font-ui);
+      font-size: 14px;
+      line-height: 1.6;
+      resize: none;
+      min-height: 24px;
+      max-height: 200px;
+      overflow-y: auto;
+      padding: 0;
+    }
+
+    #message-input::placeholder { color: var(--text-muted); }
+
+    #attach-btn {
+      width: 32px;
+      height: 32px;
+      flex-shrink: 0;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: var(--radius-sm);
+      color: var(--text-secondary);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all var(--transition);
+    }
+
+    #attach-btn:hover {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+    }
+
+    #send-btn {
+      width: 36px;
+      height: 36px;
+      flex-shrink: 0;
+      border-radius: var(--radius-sm);
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all var(--transition);
+      background: var(--accent);
+      color: #fff;
+    }
+
+    #send-btn:hover:not(:disabled) { background: var(--accent-dim); }
+    #send-btn:disabled { background: var(--bg-hover); color: var(--text-muted); cursor: not-allowed; }
+    #send-btn.stop { background: var(--error); }
+    #send-btn.stop:hover { background: #c04040; }
+
+    .input-hint {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 8px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    kbd {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-bright);
+      border-radius: 3px;
+      padding: 1px 5px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--text-secondary);
+    }
+
+    /* ═══ SETTINGS PANEL (slide-in from right) ═══ */
+    #settings-panel {
+      position: fixed;
+      top: 0;
+      right: 0;
+      width: 380px;
+      height: 100%;
+      background: var(--bg-surface);
+      border-left: 1px solid var(--border);
+      z-index: 500;
+      display: flex;
+      flex-direction: column;
+      transform: translateX(100%);
+      transition: transform 0.25s cubic-bezier(0.4,0,0.2,1);
+      box-shadow: -4px 0 32px rgba(0,0,0,0.6);
+    }
+
+    #settings-panel.open { transform: translateX(0); }
+
+    .panel-header {
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .panel-title {
+      font-family: var(--font-head);
+      font-size: 15px;
+      font-weight: 600;
+      flex: 1;
+    }
+
+    .panel-close {
+      width: 30px;
+      height: 30px;
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all var(--transition);
+    }
+
+    .panel-close:hover {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+    }
+
+    #settings-scroll {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .settings-section {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .settings-section-label {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .settings-section-label::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    .form-label {
+      font-size: 12px;
+      color: var(--text-secondary);
+      font-weight: 500;
+    }
+
+    .form-input, .form-select, .form-textarea {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-bright);
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      padding: 8px 10px;
+      transition: border-color var(--transition);
+      width: 100%;
+    }
+
+    .form-input:focus, .form-select:focus { border-color: var(--accent-border); outline: none; }
+
+    .form-select {
+      cursor: pointer;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%237090b8' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+      padding-right: 30px;
+    }
+
+    .form-hint {
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    .range-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .range-row input[type=range] {
+      flex: 1;
+      accent-color: var(--accent);
+    }
+
+    .range-value {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--accent);
+      width: 40px;
+      text-align: right;
+    }
+
+    /* Backend radio buttons */
+    .backend-options {
+      display: flex;
+      gap: 6px;
+    }
+
+    .backend-opt {
+      flex: 1;
+      padding: 8px 6px;
+      border: 1px solid var(--border-bright);
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      text-align: center;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      transition: all var(--transition);
+      background: var(--bg-elevated);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      user-select: none;
+    }
+
+    .backend-opt:hover {
+      border-color: var(--accent-border);
+      color: var(--text-primary);
+    }
+
+    .backend-opt.selected {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: var(--accent-glow);
+    }
+
+    .backend-opt svg { flex-shrink: 0; }
+
+    /* Progress */
+    #progress-area {
+      display: none;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    #progress-area.visible { display: flex; }
+
+    .progress-file {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-secondary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .progress-bar-wrap {
+      height: 4px;
+      background: var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent), var(--accent-dim));
+      border-radius: 2px;
+      transition: width 0.3s ease;
+      width: 0%;
+    }
+
+    .progress-pct {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--accent);
+      text-align: right;
+    }
+
+    /* Panel footer load btn */
+    .panel-footer {
+      padding: 14px 18px;
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    #load-model-btn-action {
+      width: 100%;
+      padding: 10px;
+      background: var(--accent);
+      border: none;
+      border-radius: var(--radius-sm);
+      color: #fff;
+      font-family: var(--font-ui);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all var(--transition);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    #load-model-btn-action:hover:not(:disabled) { background: var(--accent-dim); }
+    #load-model-btn-action:disabled { background: var(--text-muted); cursor: not-allowed; }
+
+    /* Model status chip */
+    .model-status-chip {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 100px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .model-status-chip.none { background: var(--bg-elevated); color: var(--text-muted); border: 1px solid var(--border); }
+    .model-status-chip.loading { background: rgba(245,166,35,0.12); color: var(--warning); border: 1px solid rgba(245,166,35,0.3); }
+    .model-status-chip.ready { background: rgba(34,211,161,0.12); color: var(--success); border: 1px solid rgba(34,211,161,0.3); }
+    .model-status-chip.error { background: rgba(240,96,96,0.12); color: var(--error); border: 1px solid rgba(240,96,96,0.3); }
+
+    /* Overlay for mobile */
+    #overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      z-index: 90;
+    }
+
+    /* Toast */
+    #toast-container {
+      position: fixed;
+      bottom: 80px;
+      right: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      z-index: 1000;
+      pointer-events: none;
+    }
+
+    .toast {
+      padding: 10px 16px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-bright);
+      border-radius: var(--radius);
+      font-size: 13px;
+      color: var(--text-primary);
+      box-shadow: var(--shadow);
+      animation: toastIn 0.2s ease;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .toast.success { border-color: rgba(34,211,161,0.4); color: var(--success); }
+    .toast.error   { border-color: rgba(240,96,96,0.4); color: var(--error); }
+    .toast.info    { border-color: var(--accent-border); color: var(--accent); }
+
+    @keyframes toastIn {
+      from { opacity:0; transform:translateY(10px); }
+      to   { opacity:1; transform:translateY(0); }
+    }
+
+    /* ═══ RESPONSIVE ═══ */
+    @media (max-width: 768px) {
+      #sidebar {
+        position: fixed;
+        top: 0; left: 0;
+        height: 100%;
+        transform: translateX(-100%);
+        z-index: 200;
+        width: 280px;
+        min-width: 280px;
+      }
+
+      #sidebar.mobile-open {
+        transform: translateX(0);
+      }
+
+      #sidebar.collapsed {
+        transform: translateX(-100%);
+        width: 280px;
+        min-width: 280px;
+      }
+
+      #overlay { display: block; }
+      #overlay.visible { display: block; opacity: 1; pointer-events: all; }
+      #overlay:not(.visible) { display: none; }
+
+      #settings-panel { width: 100%; }
+
+      #messages-list { padding: 16px 12px; }
+
+      #input-area { padding: 10px 12px 12px; }
+    }
+
+    @media (max-width: 480px) {
+      .message-content { font-size: 13.5px; }
+    }
+
+    /* ═══ UTILITY ═══ */
+    .hidden { display: none !important; }
+    .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); }
+
+    /* Spinning animation for loader */
+    .spin {
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+<div id="overlay" aria-hidden="true"></div>
+
+<div id="app" role="main">
+
+  <!-- ═══ SIDEBAR ═══ -->
+  <aside id="sidebar" aria-label="Chat history">
+    <div class="sidebar-header">
+      <div class="logo-mark">
+        <div class="logo-icon" aria-hidden="true">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+        </div>
+        <span class="logo-text">Inferbox</span>
+      </div>
+      <button id="new-chat-btn" aria-label="New chat" title="New chat">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
+    </div>
+
+    <div id="history-section" role="navigation" aria-label="Chat history">
+      <!-- Populated by JS -->
+    </div>
+
+    <div class="sidebar-footer">
+      <button class="sidebar-footer-btn" id="settings-btn" aria-label="Open settings">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        <span data-i18n="settings">Settings</span>
+      </button>
+
+      <div id="lang-selector">
+        <button id="lang-btn" aria-label="Language selector" aria-haspopup="listbox">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          <span id="lang-label">EN</span>
+        </button>
+        <div class="lang-dropdown hidden" id="lang-dropdown" role="listbox" aria-label="Select language">
+          <!-- Populated by JS -->
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ═══ MAIN ═══ -->
+  <div id="main">
+    <!-- Header -->
+    <header id="chat-header">
+      <button id="sidebar-toggle" aria-label="Toggle sidebar">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
+
+      <div class="header-model-info">
+        <div class="status-dot idle" id="status-dot" title="Model status"></div>
+        <div class="header-model-name" id="header-model-name" data-i18n="no_model_loaded">No model loaded</div>
+      </div>
+
+      <div class="header-actions">
+        <div id="header-status-chip" class="model-status-chip none">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="6"/></svg>
+          <span data-i18n="no_model">No model</span>
+        </div>
+        <button class="icon-btn" id="header-load-model-btn" aria-label="Load model" title="Load / configure model">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Messages -->
+    <div id="messages-container" role="log" aria-live="polite" aria-label="Chat messages">
+      <div id="messages-list">
+        <!-- Welcome screen shown when no messages -->
+        <div id="welcome">
+          <div class="welcome-icon" aria-hidden="true">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+          </div>
+          <h1 class="welcome-title">Inferbox</h1>
+          <p class="welcome-subtitle" data-i18n="welcome_desc">
+            Run AI models directly in your browser — no server, no API key required. Load a model and start chatting.
+          </p>
+          <div class="welcome-hint" id="welcome-load-hint" role="button" tabindex="0" aria-label="Load a model">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            <span data-i18n="load_model_hint">Click here to load a model</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Input Area -->
+    <div id="input-area">
+      <div id="input-area-inner">
+        <div id="attachments-preview" aria-label="Attached files" role="list"></div>
+
+        <div id="input-row">
+          <button id="attach-btn" aria-label="Attach file" title="Attach file">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+          </button>
+
+          <textarea
+            id="message-input"
+            rows="1"
+            aria-label="Message input"
+            data-i18n-placeholder="input_placeholder"
+            placeholder="Type a message..."
+            autocomplete="off"
+            spellcheck="true"
+          ></textarea>
+
+          <button id="send-btn" aria-label="Send message" disabled>
+            <svg id="send-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            <svg id="stop-icon" class="hidden" width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
+          </button>
+        </div>
+
+        <div class="input-hint">
+          <span><kbd>Enter</kbd> <span data-i18n="to_send">to send</span></span>
+          <span><kbd>Shift+Enter</kbd> <span data-i18n="new_line">new line</span></span>
+          <span style="flex:1"></span>
+          <span id="input-char-count" style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);"></span>
+        </div>
+      </div>
+    </div>
+  </div><!-- /#main -->
+
+  <!-- ═══ SETTINGS PANEL ═══ -->
+  <aside id="settings-panel" aria-label="Model settings">
+    <div class="panel-header">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      <span class="panel-title" data-i18n="model_settings">Model Settings</span>
+      <button class="panel-close" id="panel-close-btn" aria-label="Close settings">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    <div id="settings-scroll">
+
+      <!-- Format -->
+      <div class="settings-section">
+        <div class="settings-section-label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+          <span data-i18n="model_format">Model Format</span>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="model-format" data-i18n="format_label">Format / Loading Method</label>
+          <select class="form-select" id="model-format" aria-label="Model format">
+            <option value="hf-onnx">HuggingFace Repo — ONNX (Transformers.js)</option>
+            <option value="gguf-url">GGUF Direct URL (wllama / llama.cpp WASM)</option>
+            <option value="gguf-hf">GGUF from HuggingFace (wllama)</option>
+          </select>
+          <div class="form-hint" id="format-hint">Loads ONNX model from Hugging Face Hub via Transformers.js. Supports WebGPU acceleration.</div>
+        </div>
+      </div>
+
+      <!-- Model Source -->
+      <div class="settings-section">
+        <div class="settings-section-label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <span data-i18n="model_source">Model Source</span>
+        </div>
+
+        <!-- HF ONNX fields -->
+        <div id="field-hf-onnx" class="form-group">
+          <label class="form-label" for="hf-repo-id" data-i18n="hf_repo_id">HuggingFace Repo ID</label>
+          <input class="form-input" id="hf-repo-id" type="text"
+            placeholder="onnx-community/Qwen2.5-0.5B-Instruct"
+            value="onnx-community/Qwen2.5-0.5B-Instruct"
+            aria-label="HuggingFace repository ID" />
+          <div class="form-hint" data-i18n="hf_repo_hint">Repo must have ONNX files. Browse: huggingface.co/models?library=transformers.js</div>
+        </div>
+
+        <!-- GGUF URL field -->
+        <div id="field-gguf-url" class="form-group hidden">
+          <label class="form-label" for="gguf-url" data-i18n="gguf_url">GGUF Direct URL</label>
+          <input class="form-input" id="gguf-url" type="url"
+            placeholder="https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf"
+            value="https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf"
+            aria-label="GGUF model URL" />
+          <div class="form-hint" data-i18n="gguf_url_hint">Direct download URL to a .gguf file. Max file ≤ 2 GB per ArrayBuffer limit; split larger files.</div>
+        </div>
+
+        <!-- GGUF HF fields -->
+        <div id="field-gguf-hf" class="form-group hidden">
+          <label class="form-label" for="gguf-hf-repo" data-i18n="gguf_hf_repo">HF Repo ID</label>
+          <input class="form-input" id="gguf-hf-repo" type="text"
+            placeholder="unsloth/Qwen3-0.6B-GGUF"
+            value="unsloth/Qwen3-0.6B-GGUF"
+            aria-label="GGUF HuggingFace Repo ID" />
+          <label class="form-label" for="gguf-hf-file" style="margin-top:8px" data-i18n="gguf_hf_file">Filename in repo</label>
+          <input class="form-input" id="gguf-hf-file" type="text"
+            placeholder="Qwen3-0.6B-Q4_K_M.gguf"
+            value="Qwen3-0.6B-Q4_K_M.gguf"
+            aria-label="GGUF file name in repo" />
+        </div>
+      </div>
+
+      <!-- Backend -->
+      <div class="settings-section">
+        <div class="settings-section-label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/></svg>
+          <span data-i18n="execution_backend">Execution Backend</span>
+        </div>
+        <div class="backend-options" role="radiogroup" aria-label="Backend">
+          <div class="backend-opt selected" data-backend="webgpu" role="radio" aria-checked="true" tabindex="0">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            WebGPU
+          </div>
+          <div class="backend-opt" data-backend="wasm" role="radio" aria-checked="false" tabindex="0">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/></svg>
+            WASM/CPU
+          </div>
+          <div class="backend-opt" data-backend="webgl" role="radio" aria-checked="false" tabindex="0">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+            WebGL
+          </div>
+        </div>
+        <div class="form-hint" id="backend-hint">WebGPU uses GPU for fast inference. Falls back to WASM/CPU if unavailable. WebGL uses WebGL compute (fallback to WASM).</div>
+      </div>
+
+      <!-- ONNX dtype (only for ONNX) -->
+      <div class="settings-section" id="section-dtype">
+        <div class="settings-section-label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+          <span data-i18n="quantization">Quantization / Dtype</span>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="dtype-select" data-i18n="dtype_label">Model dtype</label>
+          <select class="form-select" id="dtype-select" aria-label="dtype">
+            <option value="q4">q4 — 4-bit (smallest, recommended)</option>
+            <option value="q8">q8 — 8-bit (balanced)</option>
+            <option value="fp16">fp16 — Half precision</option>
+            <option value="fp32">fp32 — Full precision (large)</option>
+          </select>
+          <div class="form-hint" data-i18n="dtype_hint">q4 recommended for browser. Applies to ONNX models only.</div>
+        </div>
+      </div>
+
+      <!-- mmproj -->
+      <div class="settings-section">
+        <div class="settings-section-label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+          <span data-i18n="multimodal">Multimodal (mmproj)</span>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="mmproj-url" data-i18n="mmproj_label">mmproj URL (optional)</label>
+          <input class="form-input" id="mmproj-url" type="url"
+            placeholder="https://huggingface.co/.../mmproj-model.gguf"
+            aria-label="mmproj CLIP projection model URL" />
+          <div class="form-hint" data-i18n="mmproj_hint">CLIP/vision projection model for multimodal inference (LLaVA etc.). When set, image & audio uploads are enabled.</div>
+        </div>
+      </div>
+
+      <!-- Generation params -->
+      <div class="settings-section">
+        <div class="settings-section-label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          <span data-i18n="generation_params">Generation</span>
+        </div>
+        <div class="form-group">
+          <label class="form-label" data-i18n="max_tokens">Max new tokens</label>
+          <div class="range-row">
+            <input type="range" id="max-tokens" min="64" max="4096" step="64" value="512" aria-label="Max new tokens" />
+            <span class="range-value" id="max-tokens-val">512</span>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" data-i18n="temperature">Temperature</label>
+          <div class="range-row">
+            <input type="range" id="temperature" min="0" max="2" step="0.05" value="0.7" aria-label="Temperature" />
+            <span class="range-value" id="temperature-val">0.7</span>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" data-i18n="top_p">Top-P</label>
+          <div class="range-row">
+            <input type="range" id="top-p" min="0" max="1" step="0.05" value="0.9" aria-label="Top-P" />
+            <span class="range-value" id="top-p-val">0.9</span>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="system-prompt" data-i18n="system_prompt">System Prompt</label>
+          <textarea class="form-input form-textarea" id="system-prompt" rows="3"
+            placeholder="You are a helpful assistant."
+            aria-label="System prompt">You are a helpful assistant.</textarea>
+        </div>
+      </div>
+
+      <!-- Progress -->
+      <div id="progress-area">
+        <div class="settings-section-label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <span data-i18n="downloading">Downloading</span>
+        </div>
+        <div class="progress-file" id="progress-file"></div>
+        <div class="progress-bar-wrap">
+          <div class="progress-bar-fill" id="progress-bar"></div>
+        </div>
+        <div class="progress-pct" id="progress-pct">0%</div>
+      </div>
+
+    </div><!-- /#settings-scroll -->
+
+    <div class="panel-footer">
+      <button id="load-model-btn-action" aria-label="Load model">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <span data-i18n="load_model">Load Model</span>
+      </button>
+    </div>
+  </aside><!-- /#settings-panel -->
+
+</div><!-- /#app -->
+
+<!-- Hidden file input -->
+<input type="file" id="file-input" multiple accept="*/*" hidden aria-hidden="true" />
+
+<!-- Toast container -->
+<div id="toast-container" aria-live="assertive" role="status"></div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     MAIN APPLICATION SCRIPT
+     ═══════════════════════════════════════════════════════════ -->
+<script type="module">
+/*
+  ╔══════════════════════════════════════════════════════════════════╗
+  ║  INFERBOX — Main Application                                    ║
+  ║                                                                  ║
+  ║  Architecture:                                                   ║
+  ║  • ONNX / safetensors / HF repos → Transformers.js v3            ║
+  ║    (WebGPU primary, WASM fallback)                               ║
+  ║  • GGUF models → wllama (llama.cpp compiled to WebAssembly)      ║
+  ║    (WASM only; WebGPU support planned in wllama future)          ║
+  ║                                                                  ║
+  ║  Streaming:                                                      ║
+  ║  • Transformers.js: TextStreamer with callback_function           ║
+  ║  • wllama: onNewToken callback                                   ║
+  ║                                                                  ║
+  ║  SharedArrayBuffer note:                                          ║
+  ║  • wllama multi-thread requires SAB. Detected at runtime.        ║
+  ║  • If unavailable → single-thread fallback (slower but works).  ║
+  ║  • To enable SAB: serve with COOP + COEP headers.               ║
+  ╚══════════════════════════════════════════════════════════════════╝
+*/
+
+// ═══════════════════════════════════════════════════════════
+// LIBRARY IMPORTS (ES Module CDN)
+// ═══════════════════════════════════════════════════════════
+
+let transformersPipeline = null;
+let TransformersEnv = null;
+let TransformersTextStreamer = null;
+
+let WllamaClass = null;
+let WllamaConfigPaths = null;
+
+let pdfjsLib = null;
+
+// Lazy-load libraries when needed
+async function loadTransformersJS() {
+  if (transformersPipeline) return;
+  try {
+    const mod = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.2');
+    transformersPipeline = mod.pipeline;
+    TransformersEnv = mod.env;
+    TransformersTextStreamer = mod.TextStreamer;
+    console.log('[Inferbox] Transformers.js loaded');
+  } catch(e) {
+    console.error('[Inferbox] Failed to load Transformers.js:', e);
+    throw new Error('Failed to load Transformers.js from CDN: ' + e.message);
+  }
+}
+
+async function loadWllama() {
+  if (WllamaClass) return;
+  try {
+    const mod = await import('https://cdn.jsdelivr.net/npm/@wllama/wllama@2.3.0/esm/index.js');
+    WllamaClass = mod.Wllama;
+    // Define WASM paths pointing to jsDelivr CDN
+    // This is the CDN-equivalent of the WasmFromCDN helper
+    WllamaConfigPaths = {
+      'single-thread/wllama.wasm':
+        'https://cdn.jsdelivr.net/npm/@wllama/wllama@2.3.0/esm/single-thread/wllama.wasm',
+      'multi-thread/wllama.wasm':
+        'https://cdn.jsdelivr.net/npm/@wllama/wllama@2.3.0/esm/multi-thread/wllama.wasm',
+    };
+    console.log('[Inferbox] wllama loaded');
+  } catch(e) {
+    console.error('[Inferbox] Failed to load wllama:', e);
+    throw new Error('Failed to load wllama from CDN: ' + e.message);
+  }
+}
+
+async function loadPDFJS() {
+  if (pdfjsLib) return;
+  try {
+    // PDF.js ESM build
+    const mod = await import('https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.mjs');
+    pdfjsLib = mod;
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs';
+    console.log('[Inferbox] PDF.js loaded');
+  } catch(e) {
+    console.warn('[Inferbox] PDF.js not available:', e);
+    pdfjsLib = null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// INTERNATIONALISATION (i18n)
+// ═══════════════════════════════════════════════════════════
+
+const LANGUAGES = [
+  { code: 'en', label: 'English', abbr: 'EN' },
+  { code: 'ja', label: '日本語',  abbr: 'JA' },
+  { code: 'zh', label: '中文',    abbr: 'ZH' },
+  { code: 'es', label: 'Español', abbr: 'ES' },
+  { code: 'fr', label: 'Français',abbr: 'FR' },
+];
+
+const TRANSLATIONS = {
+  en: {
+    settings: 'Settings',
+    model_settings: 'Model Settings',
+    model_format: 'Model Format',
+    format_label: 'Format / Loading Method',
+    model_source: 'Model Source',
+    hf_repo_id: 'HuggingFace Repo ID',
+    hf_repo_hint: 'Repo must have ONNX files. Browse: huggingface.co/models?library=transformers.js',
+    gguf_url: 'GGUF Direct URL',
+    gguf_url_hint: 'Direct download URL to a .gguf file. Max ≤2 GB; split larger files.',
+    gguf_hf_repo: 'HF Repo ID',
+    gguf_hf_file: 'Filename in repo',
+    execution_backend: 'Execution Backend',
+    quantization: 'Quantization / Dtype',
+    dtype_label: 'Model dtype',
+    dtype_hint: 'q4 recommended for browser. Applies to ONNX models only.',
+    multimodal: 'Multimodal (mmproj)',
+    mmproj_label: 'mmproj URL (optional)',
+    mmproj_hint: 'CLIP vision projection model for multimodal (LLaVA etc.). Enables image & audio uploads.',
+    generation_params: 'Generation',
+    max_tokens: 'Max new tokens',
+    temperature: 'Temperature',
+    top_p: 'Top-P',
+    system_prompt: 'System Prompt',
+    downloading: 'Downloading…',
+    load_model: 'Load Model',
+    welcome_desc: 'Run AI models directly in your browser — no server, no API key required.',
+    load_model_hint: 'Click here to load a model',
+    no_model_loaded: 'No model loaded',
+    no_model: 'No model',
+    to_send: 'to send',
+    new_line: 'new line',
+    input_placeholder: 'Type a message…',
+    new_chat: 'New chat',
+    you: 'You',
+    assistant: 'Assistant',
+    copy: 'Copy',
+    copied: 'Copied!',
+    delete: 'Delete',
+    today: 'Today',
+    yesterday: 'Yesterday',
+    older: 'Older',
+    attach_text_only: 'mmproj not set — only text/PDF/code files allowed. No image or audio.',
+    attach_allowed: 'Image & audio uploads enabled (mmproj set).',
+    model_loaded: 'Model loaded successfully',
+    model_load_error: 'Failed to load model',
+    loading_model: 'Loading model…',
+    thinking: 'Thinking…',
+    generating: 'Generating…',
+    cancelled: 'Generation cancelled',
+    clear_history: 'Clear history',
+    backend_webgpu: 'WebGPU not supported — falling back to WASM/CPU.',
+    backend_webgl: 'WebGL compute not directly supported via Transformers.js — using WASM/CPU instead.',
+    sab_unavailable: 'SharedArrayBuffer unavailable: wllama will use single-thread mode (slower). For multi-thread, serve with COOP+COEP headers.',
+    file_read_error: 'Could not read file: ',
+    pdf_read_error: 'PDF.js not available — only text content extracted.',
+    send: 'Send',
+    stop: 'Stop',
+  },
+  ja: {
+    settings: '設定',
+    model_settings: 'モデル設定',
+    model_format: 'モデル形式',
+    format_label: '形式 / 読み込み方式',
+    model_source: 'モデルソース',
+    hf_repo_id: 'HuggingFace リポジトリ ID',
+    hf_repo_hint: 'ONNXファイルが含まれるリポジトリが必要です。',
+    gguf_url: 'GGUF 直接 URL',
+    gguf_url_hint: '.gguf ファイルへの直接ダウンロードURL。最大2GB。',
+    gguf_hf_repo: 'HF リポジトリ ID',
+    gguf_hf_file: 'リポジトリ内ファイル名',
+    execution_backend: '実行バックエンド',
+    quantization: '量子化 / dtype',
+    dtype_label: 'モデル dtype',
+    dtype_hint: 'ブラウザには q4 を推奨します。ONNXモデルのみ有効。',
+    multimodal: 'マルチモーダル (mmproj)',
+    mmproj_label: 'mmproj URL (省略可)',
+    mmproj_hint: 'マルチモーダル用CLIP投影モデル。設定すると画像・音声アップロードが有効になります。',
+    generation_params: '生成パラメータ',
+    max_tokens: '最大生成トークン数',
+    temperature: 'テンパラチャー',
+    top_p: 'Top-P',
+    system_prompt: 'システムプロンプト',
+    downloading: 'ダウンロード中…',
+    load_model: 'モデル読み込み',
+    welcome_desc: 'ブラウザで直接AIモデルを実行 — サーバー不要、APIキー不要。',
+    load_model_hint: 'クリックしてモデルを読み込む',
+    no_model_loaded: 'モデル未読み込み',
+    no_model: 'モデルなし',
+    to_send: '送信',
+    new_line: '改行',
+    input_placeholder: 'メッセージを入力…',
+    new_chat: '新しいチャット',
+    you: 'あなた',
+    assistant: 'アシスタント',
+    copy: 'コピー',
+    copied: 'コピー済み!',
+    delete: '削除',
+    today: '今日',
+    yesterday: '昨日',
+    older: 'それ以前',
+    attach_text_only: 'mmproj 未設定 — テキスト/PDF/コードファイルのみ許可。画像・音声は不可。',
+    attach_allowed: '画像・音声アップロードが有効です (mmproj 設定済み)。',
+    model_loaded: 'モデルの読み込みに成功しました',
+    model_load_error: 'モデルの読み込みに失敗しました',
+    loading_model: 'モデル読み込み中…',
+    thinking: '思考中…',
+    generating: '生成中…',
+    cancelled: '生成をキャンセルしました',
+    clear_history: '履歴を削除',
+    backend_webgpu: 'WebGPU がサポートされていません。WASM/CPU にフォールバックします。',
+    backend_webgl: 'WebGL compute は Transformers.js で直接サポートされていません。WASM/CPU を使用します。',
+    sab_unavailable: 'SharedArrayBuffer が利用できません: wllama はシングルスレッドモードで動作します (低速)。マルチスレッドにはCOOP+COEPヘッダーが必要です。',
+    file_read_error: 'ファイルを読み取れませんでした: ',
+    pdf_read_error: 'PDF.js が利用できません — テキスト内容のみ抽出されます。',
+    send: '送信',
+    stop: '停止',
+  },
+  zh: {
+    settings: '设置',
+    model_settings: '模型设置',
+    model_format: '模型格式',
+    format_label: '格式 / 加载方式',
+    model_source: '模型来源',
+    hf_repo_id: 'HuggingFace 仓库 ID',
+    hf_repo_hint: '仓库必须包含ONNX文件。',
+    gguf_url: 'GGUF 直接URL',
+    gguf_url_hint: '.gguf文件的直接下载URL，最大2GB。',
+    gguf_hf_repo: 'HF 仓库 ID',
+    gguf_hf_file: '仓库内文件名',
+    execution_backend: '执行后端',
+    quantization: '量化 / 数据类型',
+    dtype_label: '模型精度',
+    dtype_hint: '推荐浏览器使用q4。仅适用于ONNX模型。',
+    multimodal: '多模态 (mmproj)',
+    mmproj_label: 'mmproj URL（可选）',
+    mmproj_hint: '多模态CLIP投影模型。设置后启用图像和音频上传。',
+    generation_params: '生成参数',
+    max_tokens: '最大生成令牌数',
+    temperature: '温度',
+    top_p: 'Top-P',
+    system_prompt: '系统提示词',
+    downloading: '下载中…',
+    load_model: '加载模型',
+    welcome_desc: '直接在浏览器中运行AI模型 — 无需服务器，无需API密钥。',
+    load_model_hint: '点击此处加载模型',
+    no_model_loaded: '未加载模型',
+    no_model: '无模型',
+    to_send: '发送',
+    new_line: '换行',
+    input_placeholder: '输入消息…',
+    new_chat: '新对话',
+    you: '您',
+    assistant: '助手',
+    copy: '复制',
+    copied: '已复制!',
+    delete: '删除',
+    today: '今天',
+    yesterday: '昨天',
+    older: '更早',
+    attach_text_only: 'mmproj未设置 — 只允许文本/PDF/代码文件，不允许图像或音频。',
+    attach_allowed: '图像和音频上传已启用（已设置mmproj）。',
+    model_loaded: '模型加载成功',
+    model_load_error: '模型加载失败',
+    loading_model: '正在加载模型…',
+    thinking: '思考中…',
+    generating: '生成中…',
+    cancelled: '已取消生成',
+    clear_history: '清除历史',
+    backend_webgpu: 'WebGPU不受支持 — 回退到WASM/CPU。',
+    backend_webgl: 'WebGL计算不受直接支持 — 使用WASM/CPU。',
+    sab_unavailable: 'SharedArrayBuffer不可用：wllama将使用单线程模式（较慢）。',
+    file_read_error: '无法读取文件: ',
+    pdf_read_error: 'PDF.js不可用 — 仅提取文本内容。',
+    send: '发送',
+    stop: '停止',
+  },
+  es: {
+    settings: 'Configuración',
+    model_settings: 'Configuración del Modelo',
+    model_format: 'Formato del Modelo',
+    format_label: 'Formato / Método de carga',
+    model_source: 'Fuente del Modelo',
+    hf_repo_id: 'ID del Repositorio de HuggingFace',
+    hf_repo_hint: 'El repositorio debe tener archivos ONNX.',
+    gguf_url: 'URL Directa GGUF',
+    gguf_url_hint: 'URL de descarga directa a un archivo .gguf. Máx 2 GB.',
+    gguf_hf_repo: 'ID de Repositorio HF',
+    gguf_hf_file: 'Nombre de archivo en el repo',
+    execution_backend: 'Backend de Ejecución',
+    quantization: 'Cuantización / Dtype',
+    dtype_label: 'Dtype del modelo',
+    dtype_hint: 'q4 recomendado para el navegador. Solo para modelos ONNX.',
+    multimodal: 'Multimodal (mmproj)',
+    mmproj_label: 'URL mmproj (opcional)',
+    mmproj_hint: 'Modelo de proyección CLIP para multimodal. Habilita cargas de imágenes y audio.',
+    generation_params: 'Generación',
+    max_tokens: 'Máx. tokens nuevos',
+    temperature: 'Temperatura',
+    top_p: 'Top-P',
+    system_prompt: 'Prompt del Sistema',
+    downloading: 'Descargando…',
+    load_model: 'Cargar Modelo',
+    welcome_desc: 'Ejecuta modelos de IA directamente en tu navegador — sin servidor, sin clave API.',
+    load_model_hint: 'Haz clic aquí para cargar un modelo',
+    no_model_loaded: 'Sin modelo cargado',
+    no_model: 'Sin modelo',
+    to_send: 'enviar',
+    new_line: 'nueva línea',
+    input_placeholder: 'Escribe un mensaje…',
+    new_chat: 'Nuevo chat',
+    you: 'Tú',
+    assistant: 'Asistente',
+    copy: 'Copiar',
+    copied: '¡Copiado!',
+    delete: 'Eliminar',
+    today: 'Hoy',
+    yesterday: 'Ayer',
+    older: 'Anterior',
+    attach_text_only: 'mmproj no configurado — solo se permiten archivos de texto/PDF/código.',
+    attach_allowed: 'Carga de imágenes y audio habilitada (mmproj configurado).',
+    model_loaded: 'Modelo cargado con éxito',
+    model_load_error: 'Error al cargar el modelo',
+    loading_model: 'Cargando modelo…',
+    thinking: 'Pensando…',
+    generating: 'Generando…',
+    cancelled: 'Generación cancelada',
+    clear_history: 'Limpiar historial',
+    backend_webgpu: 'WebGPU no disponible — usando WASM/CPU.',
+    backend_webgl: 'WebGL compute no soportado — usando WASM/CPU.',
+    sab_unavailable: 'SharedArrayBuffer no disponible: wllama usará modo de un solo hilo.',
+    file_read_error: 'No se pudo leer el archivo: ',
+    pdf_read_error: 'PDF.js no disponible.',
+    send: 'Enviar',
+    stop: 'Detener',
+  },
+  fr: {
+    settings: 'Paramètres',
+    model_settings: 'Paramètres du Modèle',
+    model_format: 'Format du Modèle',
+    format_label: 'Format / Méthode de chargement',
+    model_source: 'Source du Modèle',
+    hf_repo_id: 'ID du dépôt HuggingFace',
+    hf_repo_hint: 'Le dépôt doit contenir des fichiers ONNX.',
+    gguf_url: 'URL directe GGUF',
+    gguf_url_hint: 'URL de téléchargement direct vers un fichier .gguf. Max 2 Go.',
+    gguf_hf_repo: 'ID Dépôt HF',
+    gguf_hf_file: 'Nom de fichier dans le dépôt',
+    execution_backend: 'Backend d\'exécution',
+    quantization: 'Quantification / Dtype',
+    dtype_label: 'Dtype du modèle',
+    dtype_hint: 'q4 recommandé pour le navigateur. Applicable aux modèles ONNX uniquement.',
+    multimodal: 'Multimodal (mmproj)',
+    mmproj_label: 'URL mmproj (facultatif)',
+    mmproj_hint: 'Modèle de projection CLIP pour multimodal. Active l\'upload d\'images et d\'audio.',
+    generation_params: 'Génération',
+    max_tokens: 'Max nouveaux tokens',
+    temperature: 'Température',
+    top_p: 'Top-P',
+    system_prompt: 'Invite Système',
+    downloading: 'Téléchargement…',
+    load_model: 'Charger le Modèle',
+    welcome_desc: 'Exécutez des modèles d\'IA directement dans votre navigateur — sans serveur, sans clé API.',
+    load_model_hint: 'Cliquez ici pour charger un modèle',
+    no_model_loaded: 'Aucun modèle chargé',
+    no_model: 'Aucun modèle',
+    to_send: 'envoyer',
+    new_line: 'nouvelle ligne',
+    input_placeholder: 'Tapez un message…',
+    new_chat: 'Nouveau chat',
+    you: 'Vous',
+    assistant: 'Assistant',
+    copy: 'Copier',
+    copied: 'Copié !',
+    delete: 'Supprimer',
+    today: 'Aujourd\'hui',
+    yesterday: 'Hier',
+    older: 'Plus ancien',
+    attach_text_only: 'mmproj non défini — seuls les fichiers texte/PDF/code sont autorisés.',
+    attach_allowed: 'Upload d\'images et d\'audio activé (mmproj défini).',
+    model_loaded: 'Modèle chargé avec succès',
+    model_load_error: 'Échec du chargement du modèle',
+    loading_model: 'Chargement du modèle…',
+    thinking: 'Réflexion…',
+    generating: 'Génération…',
+    cancelled: 'Génération annulée',
+    clear_history: 'Effacer l\'historique',
+    backend_webgpu: 'WebGPU non disponible — utilisation de WASM/CPU.',
+    backend_webgl: 'WebGL compute non supporté — utilisation de WASM/CPU.',
+    sab_unavailable: 'SharedArrayBuffer indisponible : wllama utilisera le mode mono-thread.',
+    file_read_error: 'Impossible de lire le fichier: ',
+    pdf_read_error: 'PDF.js non disponible.',
+    send: 'Envoyer',
+    stop: 'Arrêter',
+  },
+};
+
+let currentLang = 'en';
+
+function detectLanguage() {
+  const langs = navigator.languages || [navigator.language || 'en'];
+  for (const l of langs) {
+    const code = l.split('-')[0].toLowerCase();
+    if (TRANSLATIONS[code]) return code;
+  }
+  return 'en';
+}
+
+function t(key) {
+  return (TRANSLATIONS[currentLang] && TRANSLATIONS[currentLang][key])
+    || TRANSLATIONS['en'][key]
+    || key;
+}
+
+function applyI18n() {
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    const key = el.dataset.i18n;
+    el.textContent = t(key);
+  });
+  document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+    el.placeholder = t(el.dataset.i18nPlaceholder);
+  });
+}
+
+function setLanguage(code) {
+  currentLang = code;
+  document.documentElement.lang = code;
+  applyI18n();
+  renderLangDropdown();
+  const langObj = LANGUAGES.find(l => l.code === code);
+  document.getElementById('lang-label').textContent = langObj ? langObj.abbr : 'EN';
+  db.settings.put({ key: 'lang', value: code });
+}
+
+function renderLangDropdown() {
+  const dd = document.getElementById('lang-dropdown');
+  dd.innerHTML = '';
+  LANGUAGES.forEach(lang => {
+    const opt = document.createElement('div');
+    opt.className = 'lang-option' + (lang.code === currentLang ? ' active' : '');
+    opt.setAttribute('role', 'option');
+    opt.setAttribute('aria-selected', lang.code === currentLang ? 'true' : 'false');
+    opt.innerHTML = `<span>${lang.abbr}</span><span>${lang.label}</span>`;
+    opt.addEventListener('click', () => {
+      setLanguage(lang.code);
+      document.getElementById('lang-dropdown').classList.add('hidden');
+    });
+    dd.appendChild(opt);
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
+// DATABASE (Dexie / IndexedDB)
+// ═══════════════════════════════════════════════════════════
+
+const db = new Dexie('inferbox_v2');
+
+// Schema version 1 — base
+db.version(1).stores({
+  chats: '++id, title, createdAt, updatedAt',
+  messages: '++id, chatId, role, content, createdAt',
+  attachments: '++id, messageId, name, type, content',
+  settings: 'key',
+});
+
+// Schema version 2 — add modelConfig to chats
+db.version(2).stores({
+  chats: '++id, title, createdAt, updatedAt, modelConfig',
+  messages: '++id, chatId, role, content, createdAt',
+  attachments: '++id, messageId, name, type, content',
+  settings: 'key',
+}).upgrade(tx => {
+  // Migration: existing chats get null modelConfig
+  return tx.chats.toCollection().modify(chat => {
+    if (!chat.modelConfig) chat.modelConfig = null;
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// APPLICATION STATE
+// ═══════════════════════════════════════════════════════════
+
+const state = {
+  currentChatId: null,
+  messages: [],          // [{id, role, content, attachments}]
+  pendingAttachments: [], // [{name, type, content (text/base64), mimeType}]
+  modelStatus: 'idle',   // 'idle'|'loading'|'ready'|'error'
+  modelName: '',
+  modelFormat: 'hf-onnx',// 'hf-onnx'|'gguf-url'|'gguf-hf'
+  backend: 'webgpu',     // 'webgpu'|'wasm'|'webgl'
+  dtype: 'q4',
+  maxTokens: 512,
+  temperature: 0.7,
+  topP: 0.9,
+  systemPrompt: 'You are a helpful assistant.',
+  mmproj: '',
+  isGenerating: false,
+  abortFlag: false,
+  transformersPipe: null,
+  wllamaInstance: null,
+  sidebarOpen: true,
+  settingsPanelOpen: false,
+};
+
+// ═══════════════════════════════════════════════════════════
+// UTILITIES
+// ═══════════════════════════════════════════════════════════
+
+function showToast(msg, type='info', duration=3500) {
+  const tc = document.getElementById('toast-container');
+  const t2 = document.createElement('div');
+  const icons = {
+    info: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>',
+    success: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>',
+    error: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',
+  };
+  t2.className = `toast ${type}`;
+  t2.innerHTML = (icons[type] || '') + msg;
+  tc.appendChild(t2);
+  setTimeout(() => t2.remove(), duration);
+}
+
+function formatTime(date) {
+  return new Date(date).toLocaleTimeString(currentLang, { hour:'2-digit', minute:'2-digit' });
+}
+
+function escapeHtml(str) {
+  return str
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;');
+}
+
+function genId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2);
+}
+
+function autoResize(ta) {
+  ta.style.height = 'auto';
+  ta.style.height = Math.min(ta.scrollHeight, 200) + 'px';
+}
+
+function updateSendBtn() {
+  const btn = document.getElementById('send-btn');
+  const input = document.getElementById('message-input');
+  const hasText = input.value.trim().length > 0;
+
+  if (state.isGenerating) {
+    btn.disabled = false;
+    btn.classList.add('stop');
+    btn.setAttribute('aria-label', t('stop'));
+    document.getElementById('send-icon').classList.add('hidden');
+    document.getElementById('stop-icon').classList.remove('hidden');
+  } else {
+    btn.disabled = !hasText || state.modelStatus !== 'ready';
+    btn.classList.remove('stop');
+    btn.setAttribute('aria-label', t('send'));
+    document.getElementById('send-icon').classList.remove('hidden');
+    document.getElementById('stop-icon').classList.add('hidden');
+  }
+}
+
+function updateModelStatus(status, name) {
+  state.modelStatus = status;
+  if (name !== undefined) state.modelName = name;
+
+  const dot = document.getElementById('status-dot');
+  const nameEl = document.getElementById('header-model-name');
+  const chip = document.getElementById('header-status-chip');
+
+  dot.className = 'status-dot ' + status;
+  nameEl.textContent = state.modelName || t('no_model_loaded');
+
+  const chipLabels = {
+    idle:    [t('no_model'), 'none'],
+    loading: [t('loading_model'), 'loading'],
+    ready:   [state.modelName.split('/').pop() || 'Ready', 'ready'],
+    error:   [t('model_load_error'), 'error'],
+    thinking:[t('thinking'), 'ready'],
+    generating:[t('generating'), 'ready'],
+  };
+
+  const [label, cls] = chipLabels[status] || [status, 'none'];
+  chip.className = 'model-status-chip ' + cls;
+  chip.innerHTML = `<svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="6"/></svg><span>${label}</span>`;
+
+  updateSendBtn();
+}
+
+function updateProgress(pct, filename) {
+  const area = document.getElementById('progress-area');
+  area.classList.toggle('visible', pct < 100);
+  document.getElementById('progress-bar').style.width = pct + '%';
+  document.getElementById('progress-pct').textContent = pct.toFixed(1) + '%';
+  if (filename) {
+    document.getElementById('progress-file').textContent = filename;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// MARKDOWN RENDERER
+// ═══════════════════════════════════════════════════════════
+
+const renderer = new marked.Renderer();
+
+renderer.code = function(code, lang) {
+  const validLang = lang && hljs.getLanguage(lang) ? lang : 'plaintext';
+  let highlighted;
+  try {
+    highlighted = hljs.highlight(code, { language: validLang }).value;
+  } catch(e) {
+    highlighted = escapeHtml(code);
+  }
+  return `<pre><div class="code-block-header">
+    <span class="code-lang">${escapeHtml(lang || 'code')}</span>
+    <button class="copy-code-btn" onclick="copyCode(this)">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+      ${t('copy')}
+    </button>
+  </div><code class="hljs language-${validLang}">${highlighted}</code></pre>`;
+};
+
+marked.setOptions({ renderer, breaks: true, gfm: true });
+
+window.copyCode = function(btn) {
+  const code = btn.closest('pre').querySelector('code').textContent;
+  navigator.clipboard.writeText(code).then(() => {
+    btn.textContent = t('copied');
+    setTimeout(() => {
+      btn.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>${t('copy')}`;
+    }, 1500);
+  });
+};
+
+function renderMarkdown(text) {
+  if (typeof DOMPurify !== 'undefined') {
+    return DOMPurify.sanitize(marked.parse(text || ''));
+  }
+  return marked.parse(text || '');
+}
+
+// ═══════════════════════════════════════════════════════════
+// CHAT UI
+// ═══════════════════════════════════════════════════════════
+
+function renderMessage(msg, streaming = false) {
+  const isUser = msg.role === 'user';
+  const row = document.createElement('div');
+  row.className = 'message-row ' + msg.role;
+  row.dataset.msgId = msg.id || '';
+
+  const avatarSvg = isUser
+    ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`
+    : `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>`;
+
+  const attachmentsHtml = (msg.attachments && msg.attachments.length > 0)
+    ? `<div class="message-attachments">${msg.attachments.map(a => `
+        <div class="msg-attachment-chip">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          ${escapeHtml(a.name)}
+        </div>`).join('')}</div>`
+    : '';
+
+  const contentHtml = isUser
+    ? escapeHtml(msg.content).replace(/\n/g, '<br>')
+    : renderMarkdown(msg.content);
+
+  const cursorHtml = streaming ? '<span class="streaming-cursor" aria-hidden="true"></span>' : '';
+
+  row.innerHTML = `
+    <div class="message-avatar" aria-hidden="true">${avatarSvg}</div>
+    <div class="message-body">
+      <div class="message-meta">
+        <span class="message-role">${isUser ? t('you') : t('assistant')}</span>
+        <span>${formatTime(msg.createdAt || Date.now())}</span>
+      </div>
+      ${attachmentsHtml}
+      <div class="message-content" data-content-area>${contentHtml}${cursorHtml}</div>
+      <div class="message-actions" aria-label="Message actions">
+        <button class="msg-action-btn" onclick="copyMsgContent(this)" title="${t('copy')}" aria-label="${t('copy')}">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        </button>
+        <button class="msg-action-btn" onclick="deleteMsgRow(this)" title="${t('delete')}" aria-label="${t('delete')}">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>
+        </button>
+      </div>
+    </div>
+  `;
+
+  return row;
+}
+
+window.copyMsgContent = function(btn) {
+  const content = btn.closest('.message-body').querySelector('[data-content-area]');
+  navigator.clipboard.writeText(content.textContent);
+  showToast(t('copied'), 'success', 1500);
+};
+
+window.deleteMsgRow = function(btn) {
+  const row = btn.closest('.message-row');
+  const msgId = row.dataset.msgId;
+  row.remove();
+  if (msgId) db.messages.delete(Number(msgId));
+};
+
+function addMessageToUI(msg, streaming = false) {
+  const welcome = document.getElementById('welcome');
+  if (welcome) welcome.remove();
+
+  const list = document.getElementById('messages-list');
+  const row = renderMessage(msg, streaming);
+  list.appendChild(row);
+  scrollToBottom();
+  return row;
+}
+
+function updateStreamingMessage(row, fullText) {
+  const area = row.querySelector('[data-content-area]');
+  if (!area) return;
+  area.innerHTML = renderMarkdown(fullText) +
+    '<span class="streaming-cursor" aria-hidden="true"></span>';
+  scrollToBottom();
+}
+
+function finalizeStreamingMessage(row, fullText) {
+  const area = row.querySelector('[data-content-area]');
+  if (!area) return;
+  area.innerHTML = renderMarkdown(fullText);
+}
+
+function scrollToBottom() {
+  const c = document.getElementById('messages-container');
+  c.scrollTop = c.scrollHeight;
+}
+
+// ═══════════════════════════════════════════════════════════
+// SIDEBAR / HISTORY
+// ═══════════════════════════════════════════════════════════
+
+async function loadChatHistory() {
+  const chats = await db.chats.orderBy('updatedAt').reverse().toArray();
+  const section = document.getElementById('history-section');
+  section.innerHTML = '';
+
+  if (chats.length === 0) {
+    section.innerHTML = `<div style="padding:20px 12px;text-align:center;color:var(--text-muted);font-size:12px;">${t('new_chat')}</div>`;
+    return;
+  }
+
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const yesterday = today - 86400000;
+
+  const groups = { [t('today')]: [], [t('yesterday')]: [], [t('older')]: [] };
+  chats.forEach(chat => {
+    const ts = new Date(chat.updatedAt).getTime();
+    if (ts >= today) groups[t('today')].push(chat);
+    else if (ts >= yesterday) groups[t('yesterday')].push(chat);
+    else groups[t('older')].push(chat);
+  });
+
+  for (const [groupName, groupChats] of Object.entries(groups)) {
+    if (!groupChats.length) continue;
+    const label = document.createElement('div');
+    label.className = 'history-group-label';
+    label.textContent = groupName;
+    section.appendChild(label);
+
+    groupChats.forEach(chat => {
+      const item = document.createElement('div');
+      item.className = 'history-item' + (chat.id === state.currentChatId ? ' active' : '');
+      item.setAttribute('role', 'button');
+      item.setAttribute('tabindex', '0');
+      item.setAttribute('aria-label', chat.title || t('new_chat'));
+      item.innerHTML = `
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        <span class="history-item-title">${escapeHtml(chat.title || t('new_chat'))}</span>
+        <button class="history-item-del" aria-label="${t('delete')}" title="${t('delete')}">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      `;
+      item.addEventListener('click', (e) => {
+        if (e.target.closest('.history-item-del')) {
+          deleteChat(chat.id);
+          return;
+        }
+        loadChat(chat.id);
+        // Close sidebar on mobile
+        if (window.innerWidth < 768) closeSidebarMobile();
+      });
+      item.addEventListener('keydown', e => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); item.click(); }
+      });
+      section.appendChild(item);
+    });
+  }
+}
+
+async function loadChat(chatId) {
+  state.currentChatId = chatId;
+  const msgs = await db.messages.where('chatId').equals(chatId).sortBy('createdAt');
+  const attachMap = {};
+  if (msgs.length) {
+    const msgIds = msgs.map(m => m.id);
+    const atts = await db.attachments.where('messageId').anyOf(msgIds).toArray();
+    atts.forEach(a => {
+      if (!attachMap[a.messageId]) attachMap[a.messageId] = [];
+      attachMap[a.messageId].push(a);
+    });
+  }
+
+  const list = document.getElementById('messages-list');
+  list.innerHTML = '';
+  state.messages = [];
+
+  msgs.forEach(msg => {
+    const msgObj = { ...msg, attachments: attachMap[msg.id] || [] };
+    state.messages.push(msgObj);
+    addMessageToUI(msgObj);
+  });
+
+  if (!msgs.length) {
+    list.innerHTML = `<div id="welcome">
+      <div class="welcome-icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg></div>
+      <h1 class="welcome-title">Inferbox</h1>
+      <p class="welcome-subtitle">${t('welcome_desc')}</p>
+    </div>`;
+  }
+
+  await loadChatHistory();
+  scrollToBottom();
+}
+
+async function createNewChat() {
+  const chat = {
+    title: t('new_chat'),
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+  const id = await db.chats.add(chat);
+  state.currentChatId = id;
+  state.messages = [];
+
+  const list = document.getElementById('messages-list');
+  list.innerHTML = `<div id="welcome">
+    <div class="welcome-icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg></div>
+    <h1 class="welcome-title">Inferbox</h1>
+    <p class="welcome-subtitle">${t('welcome_desc')}</p>
+    <div class="welcome-hint" id="welcome-load-hint" role="button" tabindex="0">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      ${t('load_model_hint')}
+    </div>
+  </div>`;
+
+  const hint = document.getElementById('welcome-load-hint');
+  if (hint) hint.addEventListener('click', () => openSettingsPanel());
+
+  await loadChatHistory();
+  return id;
+}
+
+async function deleteChat(chatId) {
+  await db.messages.where('chatId').equals(chatId).delete();
+  await db.chats.delete(chatId);
+  if (state.currentChatId === chatId) {
+    await createNewChat();
+  }
+  await loadChatHistory();
+}
+
+async function saveMessage(role, content, attachments) {
+  const msg = {
+    chatId: state.currentChatId,
+    role,
+    content,
+    createdAt: Date.now(),
+  };
+  const msgId = await db.messages.add(msg);
+
+  // Save attachments
+  if (attachments && attachments.length > 0) {
+    for (const att of attachments) {
+      await db.attachments.add({ ...att, messageId: msgId });
+    }
+  }
+
+  // Update chat title from first user message
+  if (role === 'user') {
+    const chat = await db.chats.get(state.currentChatId);
+    if (chat && (chat.title === t('new_chat') || !chat.title)) {
+      await db.chats.update(state.currentChatId, {
+        title: content.slice(0, 48) + (content.length > 48 ? '…' : ''),
+        updatedAt: Date.now(),
+      });
+    } else {
+      await db.chats.update(state.currentChatId, { updatedAt: Date.now() });
+    }
+  }
+
+  return { ...msg, id: msgId, attachments: attachments || [] };
+}
+
+// ═══════════════════════════════════════════════════════════
+// FILE ATTACHMENT HANDLING
+// ═══════════════════════════════════════════════════════════
+
+const ALLOWED_TEXT_TYPES = [
+  'text/', 'application/json', 'application/xml', 'application/javascript',
+  'application/typescript', 'application/x-python', 'application/pdf',
+  'application/x-sh', 'application/x-yaml',
+];
+
+const TEXT_EXTENSIONS = [
+  '.txt','.md','.markdown','.json','.yaml','.yml','.xml','.html','.htm',
+  '.css','.js','.ts','.jsx','.tsx','.py','.rb','.java','.c','.cpp','.h',
+  '.cs','.go','.rs','.php','.sh','.bash','.sql','.csv','.log','.toml',
+  '.ini','.conf','.env','.gitignore','.pdf',
+];
+
+const MEDIA_EXTENSIONS = ['.png','.jpg','.jpeg','.gif','.webp','.bmp','.svg'];
+const AUDIO_EXTENSIONS = ['.mp3','.wav','.ogg','.flac','.m4a','.aac'];
+
+function isTextFile(file) {
+  const name = file.name.toLowerCase();
+  const ext = '.' + name.split('.').pop();
+  if (TEXT_EXTENSIONS.includes(ext)) return true;
+  if (ALLOWED_TEXT_TYPES.some(t2 => file.type.startsWith(t2))) return true;
+  return false;
+}
+
+function isMediaFile(file) {
+  const ext = '.' + file.name.toLowerCase().split('.').pop();
+  return MEDIA_EXTENSIONS.includes(ext) || file.type.startsWith('image/');
+}
+
+function isAudioFile(file) {
+  const ext = '.' + file.name.toLowerCase().split('.').pop();
+  return AUDIO_EXTENSIONS.includes(ext) || file.type.startsWith('audio/');
+}
+
+async function readFileContent(file) {
+  const ext = '.' + file.name.toLowerCase().split('.').pop();
+
+  // PDF
+  if (ext === '.pdf' || file.type === 'application/pdf') {
+    await loadPDFJS();
+    if (pdfjsLib) {
+      try {
+        const buf = await file.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+        let text = '';
+        for (let i = 1; i <= Math.min(pdf.numPages, 50); i++) {
+          const page = await pdf.getPage(i);
+          const tc = await page.getTextContent();
+          text += tc.items.map(s => s.str).join(' ') + '\n';
+        }
+        return { type: 'text', content: text.trim(), name: file.name };
+      } catch(e) {
+        console.warn('PDF parse error:', e);
+      }
+    }
+    return { type: 'text', content: '[PDF content could not be extracted]', name: file.name };
+  }
+
+  // Image
+  if (isMediaFile(file)) {
+    return new Promise(resolve => {
+      const reader = new FileReader();
+      reader.onload = e => resolve({
+        type: 'image',
+        content: e.target.result, // base64 data URL
+        name: file.name,
+        mimeType: file.type,
+      });
+      reader.onerror = () => resolve({ type: 'text', content: `[Image: ${file.name}]`, name: file.name });
+      reader.readAsDataURL(file);
+    });
+  }
+
+  // Audio
+  if (isAudioFile(file)) {
+    return new Promise(resolve => {
+      const reader = new FileReader();
+      reader.onload = e => resolve({
+        type: 'audio',
+        content: e.target.result,
+        name: file.name,
+        mimeType: file.type,
+      });
+      reader.onerror = () => resolve({ type: 'text', content: `[Audio: ${file.name}]`, name: file.name });
+      reader.readAsDataURL(file);
+    });
+  }
+
+  // Text files
+  return new Promise(resolve => {
+    const reader = new FileReader();
+    reader.onload = e => resolve({
+      type: 'text',
+      content: e.target.result,
+      name: file.name,
+    });
+    reader.onerror = () => resolve({
+      type: 'text',
+      content: `[Could not read: ${file.name}]`,
+      name: file.name,
+    });
+    reader.readAsText(file);
+  });
+}
+
+async function handleFileSelection(files) {
+  const hasMmproj = !!state.mmproj;
+
+  for (const file of files) {
+    const isMedia = isMediaFile(file);
+    const isAudio = isAudioFile(file);
+
+    if ((isMedia || isAudio) && !hasMmproj) {
+      showToast(t('attach_text_only'), 'error', 4000);
+      continue;
+    }
+
+    if (!isTextFile(file) && !isMedia && !isAudio) {
+      // Unknown type — try as text
+    }
+
+    const fileData = await readFileContent(file);
+    state.pendingAttachments.push(fileData);
+    renderAttachmentPreview();
+  }
+}
+
+function renderAttachmentPreview() {
+  const preview = document.getElementById('attachments-preview');
+  preview.innerHTML = '';
+  state.pendingAttachments.forEach((att, idx) => {
+    const chip = document.createElement('div');
+    chip.className = 'attachment-chip';
+    chip.setAttribute('role', 'listitem');
+    chip.innerHTML = `
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        ${att.type === 'image'
+          ? '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>'
+          : att.type === 'audio'
+          ? '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>'
+          : '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>'}
+      </svg>
+      <span class="attachment-name">${escapeHtml(att.name)}</span>
+      <button class="attachment-remove" aria-label="Remove ${escapeHtml(att.name)}">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    `;
+    chip.querySelector('.attachment-remove').addEventListener('click', () => {
+      state.pendingAttachments.splice(idx, 1);
+      renderAttachmentPreview();
+    });
+    preview.appendChild(chip);
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
+// MODEL MANAGER
+// ═══════════════════════════════════════════════════════════
+
+async function detectBackend(requestedBackend) {
+  if (requestedBackend === 'webgpu') {
+    if (!navigator.gpu) {
+      showToast(t('backend_webgpu'), 'info', 5000);
+      return 'wasm';
+    }
+    try {
+      const adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) {
+        showToast(t('backend_webgpu'), 'info', 5000);
+        return 'wasm';
+      }
+      return 'webgpu';
+    } catch(e) {
+      showToast(t('backend_webgpu'), 'info', 5000);
+      return 'wasm';
+    }
+  }
+  if (requestedBackend === 'webgl') {
+    showToast(t('backend_webgl'), 'info', 5000);
+    return 'wasm'; // Fallback: WebGL compute not exposed via Transformers.js
+  }
+  return 'wasm';
+}
+
+function checkSharedArrayBuffer() {
+  if (typeof SharedArrayBuffer === 'undefined') {
+    console.warn('[Inferbox] SharedArrayBuffer unavailable. wllama single-thread mode.');
+    showToast(t('sab_unavailable'), 'info', 6000);
+    return false;
+  }
+  return true;
+}
+
+async function loadModel() {
+  if (state.isGenerating) return;
+
+  // Cleanup previous
+  if (state.wllamaInstance) {
+    try { await state.wllamaInstance.exit(); } catch(e) {}
+    state.wllamaInstance = null;
+  }
+  state.transformersPipe = null;
+
+  const format = document.getElementById('model-format').value;
+  const backend = state.backend;
+  const dtype = document.getElementById('dtype-select').value;
+  const mmproj = document.getElementById('mmproj-url').value.trim();
+
+  state.modelFormat = format;
+  state.dtype = dtype;
+  state.mmproj = mmproj;
+
+  updateModelStatus('loading');
+  document.getElementById('load-model-btn-action').disabled = true;
+  document.getElementById('progress-area').classList.add('visible');
+  updateProgress(0, '');
+
+  try {
+    if (format === 'hf-onnx') {
+      await loadONNXModel(backend, dtype);
+    } else if (format === 'gguf-url') {
+      await loadGGUFUrlModel();
+    } else if (format === 'gguf-hf') {
+      await loadGGUFHFModel();
+    }
+
+    updateModelStatus('ready', state.modelName);
+    updateProgress(100, '');
+    setTimeout(() => document.getElementById('progress-area').classList.remove('visible'), 1000);
+    showToast(t('model_loaded'), 'success');
+    saveModelSettings();
+
+  } catch(err) {
+    console.error('[Inferbox] Model load error:', err);
+    updateModelStatus('error');
+    document.getElementById('progress-area').classList.remove('visible');
+    showToast(t('model_load_error') + ': ' + err.message, 'error', 6000);
+  }
+
+  document.getElementById('load-model-btn-action').disabled = false;
+}
+
+async function loadONNXModel(requestedBackend, dtype) {
+  await loadTransformersJS();
+
+  const repoId = document.getElementById('hf-repo-id').value.trim();
+  if (!repoId) throw new Error('HuggingFace Repo ID is required');
+
+  const actualBackend = await detectBackend(requestedBackend);
+  state.modelName = repoId;
+
+  // Configure Transformers.js environment
+  TransformersEnv.allowRemoteModels = true;
+  TransformersEnv.useBrowserCache = true;
+
+  const pipeOptions = {
+    device: actualBackend,
+    dtype: dtype,
+    progress_callback: (data) => {
+      /*
+        Progress callback receives:
+        { status: 'downloading'|'loading'|'done', file, loaded, total }
+        We use this for real-time % display via Range requests streamed by the browser.
+      */
+      if (data.status === 'downloading' || data.status === 'progress') {
+        const pct = data.total ? (data.loaded / data.total * 100) : 0;
+        updateProgress(pct, data.file || '');
+      } else if (data.status === 'done') {
+        updateProgress(100, data.file || '');
+      }
+    },
+  };
+
+  console.log(`[Inferbox] Loading ONNX model: ${repoId}, backend: ${actualBackend}, dtype: ${dtype}`);
+
+  state.transformersPipe = await transformersPipeline(
+    'text-generation',
+    repoId,
+    pipeOptions
+  );
+
+  state.modelName = repoId;
+}
+
+async function loadGGUFUrlModel() {
+  await loadWllama();
+
+  const url = document.getElementById('gguf-url').value.trim();
+  if (!url) throw new Error('GGUF URL is required');
+
+  state.modelName = url.split('/').pop() || url;
+
+  const hasSAB = checkSharedArrayBuffer();
+
+  // n_threads: use half of logical cores, min 1
+  const nThreads = hasSAB
+    ? Math.max(1, Math.floor((navigator.hardwareConcurrency || 2) / 2))
+    : 1;
+
+  state.wllamaInstance = new WllamaClass(WllamaConfigPaths, {
+    logger: {
+      debug: () => {},
+      log: (...a) => console.log('[wllama]', ...a),
+      warn: (...a) => console.warn('[wllama]', ...a),
+      error: (...a) => console.error('[wllama]', ...a),
+    },
+  });
+
+  console.log(`[Inferbox] Loading GGUF from URL: ${url}, threads: ${nThreads}`);
+
+  await state.wllamaInstance.loadModelFromUrl(url, {
+    n_threads: nThreads,
+    progressCallback: ({ loaded, total }) => {
+      const pct = total ? (loaded / total * 100) : 0;
+      updateProgress(pct, url.split('/').pop());
+    },
+  });
+}
+
+async function loadGGUFHFModel() {
+  await loadWllama();
+
+  const repo = document.getElementById('gguf-hf-repo').value.trim();
+  const file = document.getElementById('gguf-hf-file').value.trim();
+  if (!repo || !file) throw new Error('Repo ID and filename are required for HF GGUF');
+
+  state.modelName = `${repo}/${file}`;
+
+  const hasSAB = checkSharedArrayBuffer();
+  const nThreads = hasSAB
+    ? Math.max(1, Math.floor((navigator.hardwareConcurrency || 2) / 2))
+    : 1;
+
+  state.wllamaInstance = new WllamaClass(WllamaConfigPaths, {
+    logger: {
+      debug: () => {},
+      log: (...a) => console.log('[wllama]', ...a),
+      warn: (...a) => console.warn('[wllama]', ...a),
+      error: (...a) => console.error('[wllama]', ...a),
+    },
+  });
+
+  console.log(`[Inferbox] Loading GGUF from HF: ${repo} / ${file}, threads: ${nThreads}`);
+
+  await state.wllamaInstance.loadModelFromHF(repo, file, {
+    n_threads: nThreads,
+    progressCallback: ({ loaded, total }) => {
+      const pct = total ? (loaded / total * 100) : 0;
+      updateProgress(pct, file);
+    },
+  });
+}
+
+function saveModelSettings() {
+  db.settings.bulkPut([
+    { key: 'modelFormat', value: state.modelFormat },
+    { key: 'modelName', value: state.modelName },
+    { key: 'backend', value: state.backend },
+    { key: 'dtype', value: state.dtype },
+    { key: 'mmproj', value: state.mmproj },
+    { key: 'maxTokens', value: state.maxTokens },
+    { key: 'temperature', value: state.temperature },
+    { key: 'topP', value: state.topP },
+    { key: 'systemPrompt', value: state.systemPrompt },
+  ]);
+}
+
+async function restoreModelSettings() {
+  const rows = await db.settings.toArray();
+  const map = {};
+  rows.forEach(r => { map[r.key] = r.value; });
+
+  if (map.modelFormat) document.getElementById('model-format').value = map.modelFormat;
+  if (map.backend) {
+    state.backend = map.backend;
+    document.querySelectorAll('.backend-opt').forEach(opt => {
+      opt.classList.toggle('selected', opt.dataset.backend === map.backend);
+    });
+  }
+  if (map.dtype) document.getElementById('dtype-select').value = map.dtype;
+  if (map.mmproj) { document.getElementById('mmproj-url').value = map.mmproj; state.mmproj = map.mmproj; }
+  if (map.maxTokens) {
+    state.maxTokens = Number(map.maxTokens);
+    document.getElementById('max-tokens').value = map.maxTokens;
+    document.getElementById('max-tokens-val').textContent = map.maxTokens;
+  }
+  if (map.temperature) {
+    state.temperature = Number(map.temperature);
+    document.getElementById('temperature').value = map.temperature;
+    document.getElementById('temperature-val').textContent = Number(map.temperature).toFixed(2);
+  }
+  if (map.topP) {
+    state.topP = Number(map.topP);
+    document.getElementById('top-p').value = map.topP;
+    document.getElementById('top-p-val').textContent = Number(map.topP).toFixed(2);
+  }
+  if (map.systemPrompt) {
+    state.systemPrompt = map.systemPrompt;
+    document.getElementById('system-prompt').value = map.systemPrompt;
+  }
+  if (map.lang) setLanguage(map.lang);
+
+  updateFormatFields(document.getElementById('model-format').value);
+}
+
+// ═══════════════════════════════════════════════════════════
+// INFERENCE
+// ═══════════════════════════════════════════════════════════
+
+function buildPromptContext() {
+  // Build conversation context from state.messages (last N for context)
+  const msgs = state.messages.slice(-20); // Last 20 messages
+  return msgs;
+}
+
+function buildAttachmentContext(attachments) {
+  if (!attachments || !attachments.length) return '';
+  let ctx = '\n\n[Attached Files]\n';
+  attachments.forEach(att => {
+    if (att.type === 'text') {
+      ctx += `\n--- ${att.name} ---\n${att.content.slice(0, 8000)}\n`;
+    } else if (att.type === 'image') {
+      ctx += `\n[Image attached: ${att.name}]\n`;
+    } else if (att.type === 'audio') {
+      ctx += `\n[Audio attached: ${att.name}]\n`;
+    }
+  });
+  return ctx;
+}
+
+async function runInference(userText, attachments) {
+  const attContext = buildAttachmentContext(attachments);
+  const fullUserText = userText + attContext;
+
+  if (state.transformersPipe) {
+    return await runTransformersInference(fullUserText);
+  } else if (state.wllamaInstance) {
+    return await runWllamaInference(fullUserText);
+  } else {
+    throw new Error('No model loaded. Please load a model first.');
+  }
+}
+
+async function runTransformersInference(userText) {
+  const messages = [];
+
+  // System prompt
+  if (state.systemPrompt) {
+    messages.push({ role: 'system', content: state.systemPrompt });
+  }
+
+  // History
+  const history = buildPromptContext();
+  history.forEach(m => {
+    if (m.role === 'user' || m.role === 'assistant') {
+      messages.push({ role: m.role, content: m.content });
+    }
+  });
+
+  // Current user message
+  messages.push({ role: 'user', content: userText });
+
+  state.abortFlag = false;
+  let fullText = '';
+
+  const streamer = new TransformersTextStreamer(
+    state.transformersPipe.tokenizer,
+    {
+      skip_prompt: true,
+      skip_special_tokens: true,
+      callback_function: (token) => {
+        if (state.abortFlag) throw new Error('AbortError');
+        fullText += token;
+        if (state._streamingRow) {
+          updateStreamingMessage(state._streamingRow, fullText);
+        }
+      },
+    }
+  );
+
+  await state.transformersPipe(messages, {
+    max_new_tokens: state.maxTokens,
+    do_sample: state.temperature > 0,
+    temperature: state.temperature,
+    top_p: state.topP,
+    streamer,
+  });
+
+  return fullText;
+}
+
+async function runWllamaInference(userText) {
+  const history = buildPromptContext();
+
+  // Build chat format for wllama
+  // wllama v2 supports createCompletion with sampling options
+  let prompt = '';
+
+  if (state.systemPrompt) {
+    prompt += `<|im_start|>system\n${state.systemPrompt}<|im_end|>\n`;
+  }
+
+  history.forEach(m => {
+    if (m.role === 'user') {
+      prompt += `<|im_start|>user\n${m.content}<|im_end|>\n`;
+    } else if (m.role === 'assistant') {
+      prompt += `<|im_start|>assistant\n${m.content}<|im_end|>\n`;
+    }
+  });
+
+  prompt += `<|im_start|>user\n${userText}<|im_end|>\n<|im_start|>assistant\n`;
+
+  state.abortFlag = false;
+  let fullText = '';
+
+  await state.wllamaInstance.createCompletion(prompt, {
+    nPredict: state.maxTokens,
+    sampling: {
+      temp: state.temperature,
+      top_p: state.topP,
+    },
+    onNewToken: (_token, piece, currentText) => {
+      if (state.abortFlag) {
+        // Signal wllama to stop
+        state.wllamaInstance.cancelCompletion();
+        return;
+      }
+      fullText = currentText;
+      if (state._streamingRow) {
+        updateStreamingMessage(state._streamingRow, fullText);
+      }
+    },
+  });
+
+  return fullText;
+}
+
+async function sendMessage() {
+  if (state.isGenerating) {
+    // Stop generation
+    state.abortFlag = true;
+    if (state.wllamaInstance) {
+      try { state.wllamaInstance.cancelCompletion(); } catch(e) {}
+    }
+    return;
+  }
+
+  const input = document.getElementById('message-input');
+  const text = input.value.trim();
+  if (!text) return;
+
+  if (state.modelStatus !== 'ready') {
+    showToast(t('no_model_loaded'), 'error');
+    openSettingsPanel();
+    return;
+  }
+
+  // Ensure we have a chat
+  if (!state.currentChatId) {
+    await createNewChat();
+  }
+
+  const attachments = [...state.pendingAttachments];
+  state.pendingAttachments = [];
+  renderAttachmentPreview();
+
+  input.value = '';
+  input.style.height = 'auto';
+
+  // Save & render user message
+  const userMsg = await saveMessage('user', text, attachments);
+  userMsg.attachments = attachments;
+  state.messages.push(userMsg);
+  addMessageToUI(userMsg);
+
+  // Show streaming assistant message
+  state.isGenerating = true;
+  updateModelStatus('generating', state.modelName);
+  updateSendBtn();
+
+  const streamingMsg = {
+    id: null,
+    role: 'assistant',
+    content: '',
+    createdAt: Date.now(),
+    attachments: [],
+  };
+
+  const streamingRow = addMessageToUI(streamingMsg, true);
+  state._streamingRow = streamingRow;
+
+  try {
+    const result = await runInference(text, attachments);
+    const finalText = result || '';
+
+    finalizeStreamingMessage(streamingRow, finalText);
+
+    // Save assistant message
+    const assistantMsg = await saveMessage('assistant', finalText, []);
+    assistantMsg.attachments = [];
+    state.messages.push(assistantMsg);
+    streamingRow.dataset.msgId = assistantMsg.id;
+
+    if (state.abortFlag) {
+      showToast(t('cancelled'), 'info');
+    }
+
+  } catch(err) {
+    if (err.message === 'AbortError' || state.abortFlag) {
+      // Partial result is fine
+      const partialText = streamingRow.querySelector('[data-content-area]')?.textContent || '';
+      finalizeStreamingMessage(streamingRow, partialText);
+      showToast(t('cancelled'), 'info');
+    } else {
+      console.error('[Inferbox] Inference error:', err);
+      finalizeStreamingMessage(streamingRow, `[Error: ${err.message}]`);
+      showToast(err.message, 'error', 5000);
+    }
+  }
+
+  state.isGenerating = false;
+  state._streamingRow = null;
+  state.abortFlag = false;
+  updateModelStatus('ready', state.modelName);
+  updateSendBtn();
+  await loadChatHistory();
+}
+
+// ═══════════════════════════════════════════════════════════
+// SETTINGS PANEL UI
+// ═══════════════════════════════════════════════════════════
+
+function openSettingsPanel() {
+  state.settingsPanelOpen = true;
+  document.getElementById('settings-panel').classList.add('open');
+}
+
+function closeSettingsPanel() {
+  state.settingsPanelOpen = false;
+  document.getElementById('settings-panel').classList.remove('open');
+}
+
+function updateFormatFields(format) {
+  const hfOnnxFields = document.getElementById('field-hf-onnx');
+  const ggufUrlFields = document.getElementById('field-gguf-url');
+  const ggufHfFields  = document.getElementById('field-gguf-hf');
+  const dtypeSection  = document.getElementById('section-dtype');
+  const fmtHint       = document.getElementById('format-hint');
+
+  hfOnnxFields.classList.toggle('hidden', format !== 'hf-onnx');
+  ggufUrlFields.classList.toggle('hidden', format !== 'gguf-url');
+  ggufHfFields.classList.toggle('hidden', format !== 'gguf-hf');
+  dtypeSection.classList.toggle('hidden', format !== 'hf-onnx');
+
+  const hints = {
+    'hf-onnx': 'Loads ONNX model from Hugging Face Hub via Transformers.js. Supports WebGPU & WASM.',
+    'gguf-url': 'Loads GGUF via wllama (llama.cpp WASM). No WebGPU — CPU/WASM inference. Max 2 GB.',
+    'gguf-hf': 'Downloads GGUF from HuggingFace Hub via wllama. Supports multi-part models.',
+  };
+  fmtHint.textContent = hints[format] || '';
+}
+
+function closeSidebarMobile() {
+  document.getElementById('sidebar').classList.remove('mobile-open');
+  document.getElementById('overlay').classList.remove('visible');
+}
+
+// ═══════════════════════════════════════════════════════════
+// EVENT LISTENERS
+// ═══════════════════════════════════════════════════════════
+
+function setupEvents() {
+  // New chat
+  document.getElementById('new-chat-btn').addEventListener('click', createNewChat);
+
+  // Sidebar toggle
+  document.getElementById('sidebar-toggle').addEventListener('click', () => {
+    if (window.innerWidth < 768) {
+      document.getElementById('sidebar').classList.toggle('mobile-open');
+      document.getElementById('overlay').classList.toggle('visible');
+    } else {
+      const sidebar = document.getElementById('sidebar');
+      sidebar.classList.toggle('collapsed');
+      state.sidebarOpen = !sidebar.classList.contains('collapsed');
+    }
+  });
+
+  // Overlay click (mobile)
+  document.getElementById('overlay').addEventListener('click', () => {
+    closeSidebarMobile();
+    closeSettingsPanel();
+  });
+
+  // Settings panel open/close
+  document.getElementById('settings-btn').addEventListener('click', openSettingsPanel);
+  document.getElementById('header-load-model-btn').addEventListener('click', openSettingsPanel);
+  document.getElementById('panel-close-btn').addEventListener('click', closeSettingsPanel);
+
+  // Load model action
+  document.getElementById('load-model-btn-action').addEventListener('click', loadModel);
+
+  // Format select
+  document.getElementById('model-format').addEventListener('change', e => {
+    updateFormatFields(e.target.value);
+  });
+
+  // Backend options
+  document.querySelectorAll('.backend-opt').forEach(opt => {
+    opt.addEventListener('click', () => {
+      document.querySelectorAll('.backend-opt').forEach(o => {
+        o.classList.remove('selected');
+        o.setAttribute('aria-checked', 'false');
+      });
+      opt.classList.add('selected');
+      opt.setAttribute('aria-checked', 'true');
+      state.backend = opt.dataset.backend;
+    });
+    opt.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); opt.click(); }
+    });
+  });
+
+  // Range sliders
+  const sliders = [
+    { id: 'max-tokens', valId: 'max-tokens-val', stateKey: 'maxTokens', format: v => Math.round(v) },
+    { id: 'temperature', valId: 'temperature-val', stateKey: 'temperature', format: v => Number(v).toFixed(2) },
+    { id: 'top-p', valId: 'top-p-val', stateKey: 'topP', format: v => Number(v).toFixed(2) },
+  ];
+  sliders.forEach(({ id, valId, stateKey, format }) => {
+    const el = document.getElementById(id);
+    const val = document.getElementById(valId);
+    el.addEventListener('input', () => {
+      state[stateKey] = Number(el.value);
+      val.textContent = format(el.value);
+    });
+  });
+
+  // System prompt
+  document.getElementById('system-prompt').addEventListener('input', e => {
+    state.systemPrompt = e.target.value;
+  });
+
+  // mmproj
+  document.getElementById('mmproj-url').addEventListener('input', e => {
+    state.mmproj = e.target.value.trim();
+    if (state.mmproj) showToast(t('attach_allowed'), 'info', 3000);
+  });
+
+  // Message input
+  const msgInput = document.getElementById('message-input');
+  msgInput.addEventListener('input', () => {
+    autoResize(msgInput);
+    updateSendBtn();
+    const len = msgInput.value.length;
+    document.getElementById('input-char-count').textContent = len > 0 ? len : '';
+  });
+
+  msgInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (!document.getElementById('send-btn').disabled) sendMessage();
+    }
+  });
+
+  // Send/stop button
+  document.getElementById('send-btn').addEventListener('click', sendMessage);
+
+  // Attach file
+  document.getElementById('attach-btn').addEventListener('click', () => {
+    const hasMmproj = !!state.mmproj;
+    const fi = document.getElementById('file-input');
+    if (hasMmproj) {
+      fi.accept = '*/*';
+    } else {
+      fi.accept = '.txt,.md,.json,.yaml,.yml,.xml,.html,.css,.js,.ts,.py,.rb,.java,.c,.cpp,.h,.cs,.go,.rs,.php,.sh,.sql,.csv,.log,.toml,.ini,.pdf,.jsx,.tsx';
+    }
+    fi.click();
+  });
+
+  document.getElementById('file-input').addEventListener('change', async e => {
+    const files = Array.from(e.target.files);
+    await handleFileSelection(files);
+    e.target.value = '';
+  });
+
+  // Lang dropdown toggle
+  document.getElementById('lang-btn').addEventListener('click', e => {
+    e.stopPropagation();
+    document.getElementById('lang-dropdown').classList.toggle('hidden');
+  });
+
+  document.addEventListener('click', () => {
+    document.getElementById('lang-dropdown').classList.add('hidden');
+  });
+
+  // Welcome load hint
+  const wlh = document.getElementById('welcome-load-hint');
+  if (wlh) {
+    wlh.addEventListener('click', openSettingsPanel);
+    wlh.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openSettingsPanel(); }
+    });
+  }
+
+  // Keyboard: Escape closes panels
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+      if (state.settingsPanelOpen) closeSettingsPanel();
+    }
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════════
+
+async function init() {
+  // Detect language
+  currentLang = detectLanguage();
+  applyI18n();
+  renderLangDropdown();
+
+  const langObj = LANGUAGES.find(l => l.code === currentLang);
+  document.getElementById('lang-label').textContent = langObj ? langObj.abbr : 'EN';
+
+  // Set up events
+  setupEvents();
+
+  // Restore settings
+  await restoreModelSettings();
+
+  // Load most recent chat or create new one
+  const chats = await db.chats.orderBy('updatedAt').reverse().limit(1).toArray();
+  if (chats.length > 0) {
+    await loadChat(chats[0].id);
+  } else {
+    await createNewChat();
+  }
+
+  // Update format fields
+  updateFormatFields(document.getElementById('model-format').value);
+
+  // Initial status
+  updateModelStatus('idle');
+  updateSendBtn();
+
+  console.log('[Inferbox] Ready. SharedArrayBuffer:', typeof SharedArrayBuffer !== 'undefined');
+  console.log('[Inferbox] WebGPU:', !!navigator.gpu);
+}
+
+init().catch(err => console.error('[Inferbox] Init error:', err));
+</script>
+
+<!-- Note: PDF.js module is loaded dynamically on first PDF attachment -->
+</body>
+</html>
