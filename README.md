@@ -145,17 +145,6 @@ If you integrate this into a hosted product, consider privacy disclosures around
 
 ---
 
-## Benchmarks (placeholder)
-
-Add a small benchmark table showing latency and memory on representative devices (desktop GPU, integrated GPU, CPU). Example table placeholder below — replace with real numbers after testing.
-
-|                 Device | Model      | Backend | q-precision |            Response (128 tokens) |
-| ---------------------: | ---------- | ------: | ----------: | -------------------------------: |
-| Desktop (discrete GPU) | Qwen‑tiny  |  WebGPU |          q4 | ⭘⭘の画像を入れる (benchmark screenshot) |
-|    Laptop (integrated) | GGUF‑small |    WASM |      Q4_K_M |                   (results here) |
-
----
-
 ## Troubleshooting & FAQ
 
 **Q: The model fails to load with an "ArrayBuffer" error.**
